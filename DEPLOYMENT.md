@@ -32,8 +32,8 @@ Panduan ini berisi langkah-langkah lengkap untuk mengonlinekan aplikasi **Family
 Buka terminal di folder project (`d:\Fathan\Project\Moneytracker\family-money-tracker`), lalu jalankan perintah berikut secara berurutan:
 
 ```bash
-# 1. Hubungkan repo lokal dengan GitHub (ganti USERNAME_ANDA dengan username GitHub Anda)
-git remote add origin https://github.com/USERNAME_ANDA/family-money-tracker.git
+# 1. Hubungkan repo lokal dengan GitHub
+git remote add origin https://github.com/fathanrizk/Money-Tracker.git
 
 # 2. Pastikan berada di branch main
 git branch -M main

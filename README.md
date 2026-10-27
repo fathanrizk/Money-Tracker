@@ -51,7 +51,7 @@ Aplikasi pencatatan dan pelacakan keuangan keluarga kolaboratif yang modern, tra
 ### 2. Instalasi & Menjalankan
 ```bash
 # Clone repository
-git clone https://github.com/USERNAME/family-money-tracker.git
+git clone https://github.com/fathanrizk/Money-Tracker.git
 cd family-money-tracker
 
 # Install dependencies
