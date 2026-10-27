@@ -21,8 +21,35 @@ export const formatDateIndo = (dateString) => {
   }).format(date);
 };
 
-// Ambil format YYYY-MM-DD hari ini untuk nilai default input tanggal
+// Ambil format YYYY-MM-DD hari ini untuk nilai default input tanggal (menggunakan waktu lokal perangkat)
 export const getTodayISO = () => {
   const today = new Date();
-  return today.toISOString().split('T')[0];
+  const yr = today.getFullYear();
+  const mo = String(today.getMonth() + 1).padStart(2, '0');
+  const day = String(today.getDate()).padStart(2, '0');
+  return `${yr}-${mo}-${day}`;
+};
+
+// Ambil periode bulan ini (format: YYYY-MM) berdasarkan tanggal lokal
+export const getCurrentPeriod = () => {
+  const now = new Date();
+  const yr = now.getFullYear();
+  const mo = String(now.getMonth() + 1).padStart(2, '0');
+  return `${yr}-${mo}`;
+};
+
+// Konversi periode dari berbagai format (ISO date string UTC dari Google Sheets, teks YYYY-MM, dsb) ke format standar "YYYY-MM"
+export const getPeriodString = (periodVal) => {
+  if (!periodVal) return '';
+  const str = String(periodVal).trim();
+  if (/^\d{4}-\d{2}$/.test(str)) return str;
+  const d = new Date(str);
+  if (!isNaN(d.getTime())) {
+    // Tambahkan offset 7 jam (WIB) jika string berasal dari serialisasi Google Sheets midnight WIB (contoh: 2026-09-30T17:00:00.000Z)
+    const wibDate = new Date(d.getTime() + 7 * 3600 * 1000);
+    const yr = wibDate.getUTCFullYear();
+    const mo = String(wibDate.getUTCMonth() + 1).padStart(2, '0');
+    return `${yr}-${mo}`;
+  }
+  return str.substring(0, 7);
 };

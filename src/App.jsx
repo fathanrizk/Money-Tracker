@@ -26,7 +26,7 @@ import {
   payDebt,
 } from './services/api';
 import { RefreshCw, ExternalLink, X } from 'lucide-react';
-import { formatRupiah, formatDateIndo } from './utils/formatters';
+import { formatRupiah, formatDateIndo, getPeriodString } from './utils/formatters';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('dashboard');
@@ -58,10 +58,11 @@ export default function App() {
     } catch {}
   };
 
-  // Helper sanitasi data tagihan & cicilan (memperbaiki jika ada data lama yang salah input nominal)
+  // Helper sanitasi data tagihan & cicilan (memperbaiki jika ada data lama yang salah input nominal dan normalisasi periode)
   const sanitizeDebts = (rawDebts) => {
     if (!Array.isArray(rawDebts)) return [];
     return rawDebts.map((d) => {
+      const cleanPeriod = getPeriodString(d.last_paid_period);
       if (d.type === 'BILL') {
         const billAmt =
           Number(d.total_amount) > 100
@@ -69,12 +70,16 @@ export default function App() {
             : Number(d.installment_amount) || Number(d.total_amount) || 0;
         return {
           ...d,
+          last_paid_period: cleanPeriod,
           total_amount: billAmt,
           installment_amount: billAmt,
           remaining_amount: billAmt,
         };
       }
-      return d;
+      return {
+        ...d,
+        last_paid_period: cleanPeriod,
+      };
     });
   };
 
@@ -652,11 +657,13 @@ export default function App() {
                 debts={debts}
                 wallets={wallets}
                 categories={categories}
+                transactions={transactions}
                 defaultActor={activeActor}
                 onAddDebt={handleAddDebt}
                 onUpdateDebt={handleUpdateDebt}
                 onDeleteDebt={handleDeleteDebt}
                 onPayDebt={handlePayDebt}
+                onSelectReceipt={(trx) => setSelectedReceiptTrx(trx)}
                 onBackToDashboard={() => setActiveTab('dashboard')}
               />
             )}

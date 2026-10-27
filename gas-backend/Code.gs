@@ -505,14 +505,14 @@ function doPost(e) {
             if (payload.type === "BILL") {
               // Untuk tagihan rutin, tandai periode bayar bulan ini
               debtSheet.getRange(row, 9).setValue(paymentDate);
-              debtSheet.getRange(row, 10).setValue(currentPeriod);
+              debtSheet.getRange(row, 10).setNumberFormat("@").setValue("'" + currentPeriod);
               updatedRemaining = debtData[i][4]; // total_amount
             } else {
               // Untuk cicilan/hutang, kurangi sisa pokok
               updatedRemaining = Math.max(0, currentRemaining - paymentAmount);
               debtSheet.getRange(row, 7).setValue(updatedRemaining);
               debtSheet.getRange(row, 9).setValue(paymentDate);
-              debtSheet.getRange(row, 10).setValue(currentPeriod);
+              debtSheet.getRange(row, 10).setNumberFormat("@").setValue("'" + currentPeriod);
             }
             break;
           }
@@ -574,7 +574,11 @@ function getSheetData(sheet) {
   for (let i = 1; i < rows.length; i++) {
     const obj = {};
     for (let j = 0; j < headers.length; j++) {
-      obj[headers[j]] = rows[i][j];
+      let val = rows[i][j];
+      if (headers[j] === "last_paid_period" && val instanceof Date) {
+        val = Utilities.formatDate(val, "Asia/Jakarta", "yyyy-MM");
+      }
+      obj[headers[j]] = val;
     }
     result.push(obj);
   }

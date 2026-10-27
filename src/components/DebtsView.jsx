@@ -13,13 +13,19 @@ import {
   ArrowDownLeft,
   Camera,
   UploadCloud,
-  //FileText,
   ChevronLeft,
   CreditCard,
-  //Building2,
   UserCheck,
+  History,
+  Receipt,
 } from 'lucide-react';
-import { formatRupiah, formatDateIndo, getTodayISO } from '../utils/formatters';
+import {
+  formatRupiah,
+  formatDateIndo,
+  getTodayISO,
+  getCurrentPeriod,
+  getPeriodString,
+} from '../utils/formatters';
 import { compressImageToBase64 } from '../services/api';
 import ConfirmModal from './ConfirmModal';
 
@@ -27,11 +33,13 @@ export default function DebtsView({
   debts = [],
   wallets = [],
   categories = [],
+  transactions = [],
   defaultActor = 'Suami',
   onAddDebt,
   onUpdateDebt,
   onDeleteDebt,
   onPayDebt,
+  onSelectReceipt,
   onBackToDashboard,
 }) {
   const [activeFilter, setActiveFilter] = useState('ALL'); // ALL | BILL | DEBT_PAYABLE | DEBT_RECEIVABLE
@@ -67,12 +75,13 @@ export default function DebtsView({
 
   const receiptInputId = useId();
 
-  // Helper identifikasi periode bulan ini (format: YYYY-MM)
-  const currentPeriod = new Date().toISOString().substring(0, 7);
+  // Helper identifikasi periode bulan ini (format standar: YYYY-MM)
+  const currentPeriod = getCurrentPeriod();
   const todayDay = new Date().getDate();
 
   // Sanitasi & Normalisasi data tagihan & cicilan (Self-healing jika installment_amount tertukar/salah)
   const normalizedDebts = debts.map((d) => {
+    const cleanPeriod = getPeriodString(d.last_paid_period);
     if (d.type === 'BILL') {
       const billAmt =
         Number(d.total_amount) > 100
@@ -80,16 +89,22 @@ export default function DebtsView({
           : Number(d.installment_amount) || Number(d.total_amount) || 0;
       return {
         ...d,
+        last_paid_period: cleanPeriod,
         total_amount: billAmt,
         installment_amount: billAmt,
         remaining_amount: billAmt,
       };
     }
-    return d;
+    return {
+      ...d,
+      last_paid_period: cleanPeriod,
+    };
   });
 
   // Kalkulasi statistik ringkasan
-  const pendingBills = normalizedDebts.filter((d) => d.type === 'BILL' && d.last_paid_period !== currentPeriod);
+  const pendingBills = normalizedDebts.filter(
+    (d) => d.type === 'BILL' && getPeriodString(d.last_paid_period) !== currentPeriod
+  );
   const totalPendingBillsAmount = pendingBills.reduce(
     (acc, d) => acc + (Number(d.total_amount || d.installment_amount) || 0),
     0
@@ -100,6 +115,17 @@ export default function DebtsView({
 
   const receivableDebts = normalizedDebts.filter((d) => d.type === 'DEBT_RECEIVABLE');
   const totalReceivableRemaining = receivableDebts.reduce((acc, d) => acc + (Number(d.remaining_amount) || 0), 0);
+
+  // Filter daftar transaksi pembayaran tagihan / hutang untuk riwayat
+  const debtPaymentTrxs = transactions.filter((t) => {
+    if (!t.notes && !t.category_id) return false;
+    const noteLower = (t.notes || '').toLowerCase();
+    const isPayPrefix = noteLower.startsWith('bayar ');
+    const matchesDebtTitle = normalizedDebts.some((d) =>
+      noteLower.includes(d.title.toLowerCase())
+    );
+    return isPayPrefix || matchesDebtTitle;
+  });
 
   // Filter daftar data sesuai tab aktif
   const filteredDebts = normalizedDebts.filter((d) => {
@@ -196,21 +222,23 @@ export default function DebtsView({
     setPayActor(defaultActor || 'Suami');
     setPayReceipt(null);
 
-    // Default nominal bayar
+    let defaultAmt = 0;
     if (debt.type === 'BILL') {
-      setPayAmount(String(debt.total_amount || debt.installment_amount || 0));
+      defaultAmt = Number(debt.total_amount || debt.installment_amount || 0);
     } else {
-      // Cicilan atau sisa hutang
-      const defaultVal = Math.min(
+      defaultAmt = Math.min(
         Number(debt.installment_amount) || Number(debt.remaining_amount) || 0,
         Number(debt.remaining_amount) || 0
-      );
-      setPayAmount(String(defaultVal || debt.installment_amount || debt.total_amount || ''));
+      ) || Number(debt.installment_amount) || Number(debt.total_amount) || 0;
     }
+    setPayAmount(String(defaultAmt || ''));
 
-    // Default kantong pertama
-    if (wallets.length > 0) {
-      setPayWalletId(wallets[0].id);
+    // Otomatis pilih kantong pertama yang memiliki saldo mencukupi (jika jenisnya pengeluaran)
+    if (debt.type !== 'DEBT_RECEIVABLE') {
+      const viableWallet = wallets.find((w) => Number(w.current_balance || 0) >= defaultAmt);
+      setPayWalletId(viableWallet ? viableWallet.id : (wallets[0]?.id || ''));
+    } else {
+      setPayWalletId(wallets[0]?.id || '');
     }
   };
 
@@ -244,6 +272,13 @@ export default function DebtsView({
       return;
     }
 
+    const isExpensePayment = payingDebt.type !== 'DEBT_RECEIVABLE';
+    const chosenWallet = wallets.find((w) => w.id === payWalletId);
+    if (isExpensePayment && (!chosenWallet || Number(chosenWallet.current_balance || 0) < amountNum)) {
+      alert(`Saldo kantong ${chosenWallet?.name || 'yang dipilih'} (${formatRupiah(chosenWallet?.current_balance || 0)}) tidak mencukupi untuk pembayaran sebesar ${formatRupiah(amountNum)}.`);
+      return;
+    }
+
     setPaySubmitting(true);
     try {
       await onPayDebt({
@@ -265,6 +300,17 @@ export default function DebtsView({
       setPaySubmitting(false);
     }
   };
+
+  // Validasi saldo kantong untuk modal pembayaran
+  const currentPayAmountNum = Number(payAmount) || 0;
+  const isPayExpense = payingDebt?.type !== 'DEBT_RECEIVABLE';
+  const currentChosenWallet = wallets.find((w) => w.id === payWalletId);
+  const isChosenWalletInsufficient = Boolean(
+    isPayExpense && currentChosenWallet && Number(currentChosenWallet.current_balance || 0) < currentPayAmountNum
+  );
+  const hasSufficientWalletAvailable = isPayExpense
+    ? wallets.some((w) => Number(w.current_balance || 0) >= currentPayAmountNum)
+    : true;
 
   return (
     <div className="space-y-6">
@@ -403,7 +449,8 @@ export default function DebtsView({
             const isPayable = item.type === 'DEBT_PAYABLE';
             const isReceivable = item.type === 'DEBT_RECEIVABLE';
 
-            const isBillPaidThisMonth = isBill && item.last_paid_period === currentPeriod;
+            const itemPeriod = getPeriodString(item.last_paid_period);
+            const isBillPaidThisMonth = isBill && itemPeriod === currentPeriod;
             const isDuePassed = !isBillPaidThisMonth && item.due_day && todayDay > Number(item.due_day);
 
             // Persentase pelunasan untuk cicilan/hutang
@@ -601,6 +648,99 @@ export default function DebtsView({
           })}
         </div>
       )}
+
+      {/* SECTION RIWAYAT PEMBAYARAN TAGIHAN & CICILAN */}
+      <div className="bg-white rounded-2xl border border-slate-200/80 shadow-sm overflow-hidden">
+        <div className="p-4 sm:p-5 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+          <div className="flex items-center gap-2.5">
+            <div className="p-2 rounded-xl bg-emerald-50 text-emerald-600">
+              <History className="w-4 h-4" />
+            </div>
+            <div>
+              <h3 className="font-bold text-slate-900 text-sm">Riwayat Pembayaran Tagihan &amp; Cicilan</h3>
+              <p className="text-[11px] text-slate-500">
+                Catatan seluruh transaksi pembayaran tagihan rutin, pelunasan pinjaman, dan struk bukti bayar
+              </p>
+            </div>
+          </div>
+          <span className="self-start sm:self-auto px-2.5 py-1 rounded-full bg-slate-100 text-slate-600 text-xs font-semibold">
+            {debtPaymentTrxs.length} Catatan
+          </span>
+        </div>
+
+        {debtPaymentTrxs.length === 0 ? (
+          <div className="p-8 text-center text-slate-400">
+            <CalendarClock className="w-8 h-8 mx-auto mb-2 opacity-40 text-slate-400" />
+            <p className="text-xs font-semibold text-slate-600">Belum Ada Riwayat Pembayaran</p>
+            <p className="text-[11px] text-slate-400 mt-0.5">
+              Ketika Anda menekan &quot;Bayar Tagihan Sekarang&quot;, riwayat dan struknya otomatis terdata rapi di sini.
+            </p>
+          </div>
+        ) : (
+          <div className="divide-y divide-slate-100">
+            {debtPaymentTrxs.slice(0, 15).map((trx) => {
+              const wallet = wallets.find((w) => w.id === (trx.from_wallet_id || trx.to_wallet_id));
+              const isIncome = trx.type === 'INCOME';
+
+              return (
+                <div
+                  key={trx.id}
+                  className="p-3.5 sm:p-4 flex items-center justify-between gap-3 hover:bg-slate-50/80 transition"
+                >
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div
+                      className={`p-2 rounded-xl shrink-0 ${
+                        isIncome ? 'bg-emerald-50 text-emerald-600' : 'bg-rose-50 text-rose-600'
+                      }`}
+                    >
+                      {isIncome ? <ArrowDownLeft className="w-4 h-4" /> : <ArrowUpRight className="w-4 h-4" />}
+                    </div>
+                    <div className="min-w-0">
+                      <p className="text-xs font-bold text-slate-800 truncate">
+                        {trx.notes || 'Pembayaran Tagihan'}
+                      </p>
+                      <div className="flex items-center gap-2 text-[10px] text-slate-400 mt-0.5">
+                        <span>{formatDateIndo(trx.date)}</span>
+                        <span>•</span>
+                        <span className="font-medium text-slate-600">{wallet?.name || 'Kantong Saldo'}</span>
+                        <span>•</span>
+                        <span className="px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 font-medium">
+                          {trx.actor}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2 shrink-0">
+                    <div className="text-right">
+                      <span
+                        className={`text-xs sm:text-sm font-bold block ${
+                          isIncome ? 'text-emerald-600' : 'text-slate-900'
+                        }`}
+                      >
+                        {isIncome ? '+' : '-'}{formatRupiah(trx.amount)}
+                      </span>
+                      <span className="text-[10px] text-emerald-600 font-semibold flex items-center justify-end gap-1">
+                        <CheckCircle2 className="w-2.5 h-2.5" /> Berhasil
+                      </span>
+                    </div>
+
+                    {trx.receipt_url && onSelectReceipt && (
+                      <button
+                        onClick={() => onSelectReceipt(trx)}
+                        className="p-1.5 rounded-lg bg-indigo-50 text-indigo-600 hover:bg-indigo-100 transition"
+                        title="Lihat Struk Bukti Bayar"
+                      >
+                        <Receipt className="w-4 h-4" />
+                      </button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
 
       {/* MODAL 1: TAMBAH / EDIT TAGIHAN ATAU HUTANG */}
       {isAddModalOpen && createPortal(
@@ -946,14 +1086,41 @@ export default function DebtsView({
                   required
                   value={payWalletId}
                   onChange={(e) => setPayWalletId(e.target.value)}
-                  className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm focus:outline-none focus:border-indigo-500"
+                  className={`w-full px-3.5 py-2.5 bg-slate-50 border rounded-xl text-sm focus:outline-none transition ${
+                    isChosenWalletInsufficient
+                      ? 'border-rose-400 bg-rose-50/20 focus:border-rose-500'
+                      : 'border-slate-200 focus:border-indigo-500'
+                  }`}
                 >
-                  {wallets.map((w) => (
-                    <option key={w.id} value={w.id}>
-                      {w.name} ({w.type}) — Saldo: {formatRupiah(w.current_balance)}
-                    </option>
-                  ))}
+                  {wallets.map((w) => {
+                    const isInsufficient = isPayExpense && Number(w.current_balance || 0) < currentPayAmountNum;
+                    return (
+                      <option
+                        key={w.id}
+                        value={w.id}
+                        disabled={isInsufficient}
+                        className={isInsufficient ? 'text-slate-400 bg-slate-100' : 'text-slate-900'}
+                      >
+                        {w.name} ({w.type}) — Saldo: {formatRupiah(w.current_balance)}
+                        {isInsufficient ? ' ⚠️ [Saldo Kurang]' : ''}
+                      </option>
+                    );
+                  })}
                 </select>
+
+                {/* Peringatan jika saldo kantong yang dipilih tidak mencukupi */}
+                {isChosenWalletInsufficient && (
+                  <div className="mt-2.5 p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 text-xs flex items-start gap-2 animate-in fade-in duration-150">
+                    <AlertCircle className="w-4 h-4 text-rose-500 shrink-0 mt-0.5" />
+                    <div>
+                      <span className="font-bold block">Saldo Kantong Tidak Mencukupi</span>
+                      <p className="text-[11px] text-rose-600 mt-0.5 leading-relaxed">
+                        Saldo di <strong>{currentChosenWallet?.name}</strong> ({formatRupiah(currentChosenWallet?.current_balance || 0)}) tidak mencukupi untuk pembayaran sebesar <strong>{formatRupiah(currentPayAmountNum)}</strong>.
+                        {!hasSufficientWalletAvailable && ' Tidak ada kantong lain dengan saldo yang mencukupi. Silakan lakukan top up atau transfer saldo dahulu.'}
+                      </p>
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* Tanggal & Pelaku */}
@@ -1072,8 +1239,13 @@ export default function DebtsView({
                 </button>
                 <button
                   type="submit"
-                  disabled={paySubmitting || isCompressingReceipt}
-                  className="flex-1 py-3 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl text-xs shadow-md shadow-indigo-100 transition disabled:opacity-50 flex items-center justify-center gap-1.5"
+                  disabled={
+                    paySubmitting ||
+                    isCompressingReceipt ||
+                    isChosenWalletInsufficient ||
+                    currentPayAmountNum <= 0
+                  }
+                  className="flex-1 py-3 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl text-xs shadow-md shadow-indigo-100 transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-1.5"
                 >
                   <CheckCircle2 className="w-4 h-4" />
                   <span>{paySubmitting ? 'Memproses...' : 'Konfirmasi Pembayaran'}</span>
